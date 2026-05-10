@@ -87,6 +87,15 @@ MODEL_CANDIDATES = {
 }
 
 
+def format_target_label(value, suffix=""):
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = value
+    label = LABELS.get(normalized, str(value))
+    return f"{label}{suffix}"
+
+
 st.set_page_config(
     page_title="Extension Credit Score",
     page_icon="EC",
@@ -437,11 +446,12 @@ class CreditScorePipeline:
         self.model_name = model_name
         self.model = model
         self.feature_columns = None
+        self.class_labels = None
         self.pipeline = None
 
     def fit(self, features, target):
         x = features.copy()
-        y = target.astype(int)
+        y = target.copy()
         self.feature_columns = list(x.columns)
 
         categorical_columns = x.select_dtypes(include=["object", "string"]).columns.tolist()
@@ -481,6 +491,7 @@ class CreditScorePipeline:
             ]
         )
         self.pipeline.fit(x, y)
+        self.class_labels = list(self.pipeline.named_steps["model"].classes_)
         return self
 
     def predict(self, features):
@@ -506,13 +517,21 @@ def train_pipeline(dataset):
     dataset = dataset.dropna(subset=[TARGET_COLUMN])
     features = dataset.drop(columns=[TARGET_COLUMN])
     target = dataset[TARGET_COLUMN]
+    class_counts = target.value_counts()
+
+    if features.empty:
+        raise ValueError("The training CSV must include at least one feature column.")
+    if len(dataset) < 2:
+        raise ValueError("The training CSV must include at least two usable rows.")
+    if target.nunique() < 2:
+        raise ValueError(f"`{TARGET_COLUMN}` must contain at least two different classes.")
 
     x_train, x_test, y_train, y_test = train_test_split(
         features,
         target,
         test_size=0.2,
         random_state=42,
-        stratify=target if target.nunique() > 1 else None,
+        stratify=target if class_counts.min() >= 2 else None,
     )
 
     results = []
@@ -525,10 +544,10 @@ def train_pipeline(dataset):
         predictions = candidate.predict(x_test)
         metrics = {
             "Algorithm Name": model_name,
-            "Accuracy": round(accuracy_score(y_test.astype(int), predictions) * 100, 3),
+            "Accuracy": round(accuracy_score(y_test, predictions) * 100, 3),
             "Precision": round(
                 precision_score(
-                    y_test.astype(int),
+                    y_test,
                     predictions,
                     average="macro",
                     zero_division=0,
@@ -538,7 +557,7 @@ def train_pipeline(dataset):
             ),
             "Recall": round(
                 recall_score(
-                    y_test.astype(int),
+                    y_test,
                     predictions,
                     average="macro",
                     zero_division=0,
@@ -548,7 +567,7 @@ def train_pipeline(dataset):
             ),
             "FSCORE": round(
                 f1_score(
-                    y_test.astype(int),
+                    y_test,
                     predictions,
                     average="macro",
                     zero_division=0,
@@ -565,10 +584,12 @@ def train_pipeline(dataset):
 
     pipeline = trained_models[best_name]
     predictions = pipeline.predict(x_test)
+    report_labels = pipeline.class_labels
     report = classification_report(
-        y_test.astype(int),
+        y_test,
         predictions,
-        target_names=["Good Score", "Bad Score"],
+        labels=report_labels,
+        target_names=[format_target_label(label) for label in report_labels],
         output_dict=True,
         zero_division=0,
     )
@@ -669,9 +690,13 @@ if dataset_bytes is None:
     st.stop()
 
 with st.spinner("Training and comparing models. Cached results are reused on refresh."):
-    pipeline, accuracy, report, test_features, model_results = train_pipeline_cached(
-        dataset_bytes
-    )
+    try:
+        pipeline, accuracy, report, test_features, model_results = train_pipeline_cached(
+            dataset_bytes
+        )
+    except ValueError as error:
+        st.error(f"Training CSV error: {error}")
+        st.stop()
 feature_frame = dataset.drop(columns=[TARGET_COLUMN])
 comparison_df = build_comparison_frame(model_results)
 
@@ -736,10 +761,10 @@ with tab_predict:
     )
     submitted, input_frame = build_input_form(feature_frame)
     if submitted:
-        prediction = int(pipeline.predict(input_frame)[0])
+        prediction = pipeline.predict(input_frame)[0]
         probabilities = pipeline.predict_proba(input_frame)
-        prediction_label = LABELS.get(prediction, prediction)
-        result_class = "result-good" if prediction == 0 else "result-bad"
+        prediction_label = format_target_label(prediction)
+        result_class = "result-good" if prediction_label == "Good" else "result-bad"
         st.markdown(
             f"""
             <div class="result-card {result_class}">
@@ -749,9 +774,13 @@ with tab_predict:
             """,
             unsafe_allow_html=True,
         )
-        if probabilities is not None and probabilities.shape[1] == 2:
-            st.progress(float(probabilities[0][prediction]))
-            st.caption(f"Confidence: {probabilities[0][prediction] * 100:.2f}%")
+        if probabilities is not None:
+            classes = list(pipeline.pipeline.named_steps["model"].classes_)
+            if prediction in classes:
+                prediction_index = classes.index(prediction)
+                confidence = float(probabilities[0][prediction_index])
+                st.progress(confidence)
+                st.caption(f"Confidence: {confidence * 100:.2f}%")
 
 with tab_batch:
     st.markdown(
@@ -784,12 +813,13 @@ with tab_batch:
         predictions = pipeline.predict(batch_data)
         output = batch_data.copy()
         output["predicted_credit_score"] = [
-            LABELS.get(int(value), str(value)) for value in predictions
+            format_target_label(value) for value in predictions
         ]
         summary = output["predicted_credit_score"].value_counts().rename_axis("Prediction")
         st.markdown("#### Prediction Summary")
         summary_df = summary.reset_index(name="Count")
-        colors = ["#0f9f6e" if label == "Good" else "#e11d48" for label in summary_df["Prediction"]]
+        palette = ["#0f9f6e", "#e11d48", "#2563eb", "#d97706", "#7c3aed", "#0891b2"]
+        colors = [palette[index % len(palette)] for index in range(len(summary_df))]
         fig_batch, ax_batch = plt.subplots(figsize=(7.5, 3.5))
         fig_batch.patch.set_facecolor("white")
         ax_batch.set_facecolor("white")
@@ -992,7 +1022,12 @@ with tab_metrics:
         unsafe_allow_html=True,
     )
     metrics = pd.DataFrame(report).transpose()
-    metric_overview = metrics.loc[["Good Score", "Bad Score"], ["precision", "recall", "f1-score"]]
+    class_rows = [
+        format_target_label(label)
+        for label in pipeline.class_labels
+        if format_target_label(label) in metrics.index
+    ]
+    metric_overview = metrics.loc[class_rows, ["precision", "recall", "f1-score"]]
     metric_plot = metric_overview.reset_index(names="Class").melt(
         id_vars="Class",
         var_name="Metric",
@@ -1043,19 +1078,21 @@ with tab_data:
         unsafe_allow_html=True,
     )
     status_counts = dataset[TARGET_COLUMN].value_counts().sort_index()
-    good_count = int(status_counts.get(0, 0))
-    bad_count = int(status_counts.get(1, 0))
+    status_cards = []
+    accents = ["var(--green)", "var(--rose)", "var(--amber)", "var(--slate)", "var(--blue)"]
+    for index, (status_value, count) in enumerate(status_counts.items()):
+        status_cards.append(
+            f"""
+            <div class="mini-card" style="--accent: {accents[index % len(accents)]};">
+                <strong>{format_target_label(status_value, " Rows")}</strong>
+                <span>{int(count):,} applicants labelled as {format_target_label(status_value)} in training data.</span>
+            </div>
+            """
+        )
     st.markdown(
         f"""
         <div class="mini-grid">
-            <div class="mini-card" style="--accent: var(--green);">
-                <strong>Good Score Rows</strong>
-                <span>{good_count:,} applicants labelled as Good in training data.</span>
-            </div>
-            <div class="mini-card" style="--accent: var(--rose);">
-                <strong>Bad Score Rows</strong>
-                <span>{bad_count:,} applicants labelled as Bad in training data.</span>
-            </div>
+            {''.join(status_cards)}
             <div class="mini-card" style="--accent: var(--blue);">
                 <strong>Training Source</strong>
                 <span>{training_source}</span>
