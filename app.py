@@ -96,6 +96,17 @@ def format_target_label(value, suffix=""):
     return f"{label}{suffix}"
 
 
+def format_class_list(class_labels):
+    labels = [format_target_label(label) for label in class_labels]
+    if not labels:
+        return "the available classes"
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} or {labels[1]}"
+    return f"{', '.join(labels[:-1])}, or {labels[-1]}"
+
+
 st.set_page_config(
     page_title="Extension Credit Score",
     page_icon="EC",
@@ -647,7 +658,7 @@ st.markdown(
     """
     <div class="hero">
         <h1>Extension Credit Score</h1>
-        <p>Train on the credit risk dataset, predict Good or Bad credit score, and compare model performance.</p>
+        <p>Train on the active credit risk dataset, predict from its available classes, and compare model performance.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -699,6 +710,7 @@ with st.spinner("Training and comparing models. Cached results are reused on ref
         st.stop()
 feature_frame = dataset.drop(columns=[TARGET_COLUMN])
 comparison_df = build_comparison_frame(model_results)
+active_class_text = format_class_list(pipeline.class_labels)
 
 st.markdown(
     f"""
@@ -737,10 +749,10 @@ tab_predict, tab_batch, tab_compare, tab_metrics, tab_data = st.tabs(
 
 with tab_predict:
     st.markdown(
-        """
+        f"""
         <div class="tab-banner banner-blue">
             <h3>Manual Credit Score Prediction</h3>
-            <p>Enter one applicant profile and let the selected model classify the credit score as Good or Bad.</p>
+            <p>Enter one applicant profile and let the selected model classify the credit score as {active_class_text}.</p>
         </div>
         <div class="mini-grid">
             <div class="mini-card" style="--accent: var(--blue);">
@@ -781,10 +793,18 @@ with tab_predict:
                 confidence = float(probabilities[0][prediction_index])
                 st.progress(confidence)
                 st.caption(f"Confidence: {confidence * 100:.2f}%")
+            probability_frame = pd.DataFrame(
+                {
+                    "Class": [format_target_label(label) for label in classes],
+                    "Probability": [f"{value * 100:.2f}%" for value in probabilities[0]],
+                }
+            )
+            st.markdown("#### Class Probabilities")
+            st.dataframe(probability_frame, width="stretch", hide_index=True)
 
 with tab_batch:
     st.markdown(
-        """
+        f"""
         <div class="tab-banner banner-green">
             <h3>Batch Test CSV Prediction</h3>
             <p>Upload a test dataset with the same feature columns and download predictions for every row.</p>
@@ -793,7 +813,7 @@ with tab_batch:
             <span class="pill">CSV input</span>
             <span class="pill">loan_status optional</span>
             <span class="pill">Download predictions</span>
-            <span class="pill">Good / Bad summary</span>
+            <span class="pill">{active_class_text} summary</span>
         </div>
         """,
         unsafe_allow_html=True,
