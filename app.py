@@ -1102,23 +1102,18 @@ with tab_data:
     accents = ["var(--green)", "var(--rose)", "var(--amber)", "var(--slate)", "var(--blue)"]
     for index, (status_value, count) in enumerate(status_counts.items()):
         status_cards.append(
-            f"""
-            <div class="mini-card" style="--accent: {accents[index % len(accents)]};">
-                <strong>{format_target_label(status_value, " Rows")}</strong>
-                <span>{int(count):,} applicants labelled as {format_target_label(status_value)} in training data.</span>
-            </div>
-            """
+            f'<div class="mini-card" style="--accent: {accents[index % len(accents)]};">'
+            f'<strong>{format_target_label(status_value, " Rows")}</strong>'
+            f'<span>{int(count):,} applicants labelled as {format_target_label(status_value)} in training data.</span>'
+            "</div>"
         )
     st.markdown(
-        f"""
-        <div class="mini-grid">
-            {''.join(status_cards)}
-            <div class="mini-card" style="--accent: var(--blue);">
-                <strong>Training Source</strong>
-                <span>{training_source}</span>
-            </div>
-        </div>
-        """,
+        '<div class="mini-grid">'
+        + "".join(status_cards)
+        + f'<div class="mini-card" style="--accent: var(--blue);">'
+        + "<strong>Training Source</strong>"
+        + f"<span>{training_source}</span>"
+        + "</div></div>",
         unsafe_allow_html=True,
     )
     st.dataframe(dataset.head(200), width="stretch")
